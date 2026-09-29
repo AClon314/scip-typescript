@@ -250,7 +250,9 @@ export class FileIndexer {
       if (!isDefinitionNode || scipSymbol.isEmpty() || scipSymbol.isLocal()) {
         // Skip enclosing ranges for these cases
       } else if (
-        ts.isVariableDeclaration(declaration) &&
+        (ts.isVariableDeclaration(declaration) ||
+          ts.isPropertyAssignment(declaration) ||
+          ts.isPropertyDeclaration(declaration)) &&
         declaration.initializer &&
         ts.isFunctionLike(declaration.initializer)
       ) {
@@ -265,6 +267,15 @@ export class FileIndexer {
         ts.isConstructorDeclaration(declaration)
       ) {
         enclosingRange = this.sourceInfo.range(declaration)
+      }
+
+      // Track F: fill `enclosing_range` for references (and any definitions that
+      // don't match the cases above) with the nearest enclosing function-like
+      // node. This is what makes call hierarchy (call site -> caller function)
+      // recoverable from the index. References previously never carried an
+      // enclosing range.
+      if (enclosingRange === undefined) {
+        enclosingRange = this.enclosingFunctionRange(node)
       }
 
       if (
@@ -290,6 +301,9 @@ export class FileIndexer {
           range,
           symbol: scipSymbol.value,
           symbol_roles: role,
+          // Track F: tag callees of call/new expressions so call edges can be
+          // read straight off the index (Occurrence.syntax_kind).
+          syntax_kind: FileIndexer.callSyntaxKind(node),
 
           diagnostics: FileIndexer.diagnosticsFor(sym, isDefinitionNode),
         })
@@ -453,6 +467,67 @@ export class FileIndexer {
         existing.relationships.push(relationship)
       }
     }
+  }
+
+  /**
+   * Track F: nearest enclosing scope node (function / method / arrow /
+   * constructor / accessor / class). Falls back to the source file for
+   * module-level occurrences so every occurrence can carry an
+   * `enclosing_range`. Classes count as scopes because Jelly models a class
+   * body (field initializers, etc.) as the enclosing caller.
+   */
+  private enclosingFunctionRange(node: ts.Node): number[] {
+    let current: ts.Node | undefined = node.parent
+    while (current) {
+      if (ts.isFunctionLike(current) || ts.isClassLike(current)) {
+        const range = this.sourceInfo.range(current)
+        if (range) {
+          return range
+        }
+      }
+      current = current.parent
+    }
+    // Module scope: use the whole file, starting at line 0 so the caller key
+    // matches Jelly's module node (`<file>:1`). `this.sourceInfo.range(sourceFile)`
+    // would instead start at the first token (after leading comments).
+    return [
+      0,
+      0,
+      this.sourceFile.getLineAndCharacterOfPosition(
+        this.sourceFile.getEnd()
+      ).line,
+      0,
+    ]
+  }
+
+  /**
+   * Track F: returns `IdentifierFunction` when `node` is the callee of a
+   * `CallExpression` / `NewExpression`, including `foo()`, `obj.foo()`,
+   * `foo?.()` and `new Foo()`. Returns undefined otherwise.
+   */
+  private static callSyntaxKind(
+    node: ts.Node
+  ): scip.scip.SyntaxKind | undefined {
+    if (!ts.isIdentifier(node) && !ts.isPrivateIdentifier(node)) {
+      return undefined
+    }
+    const parent = node.parent
+    if (
+      (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
+      parent.expression === node
+    ) {
+      return scip.scip.SyntaxKind.IdentifierFunction
+    }
+    if (ts.isPropertyAccessExpression(parent) && parent.name === node) {
+      const grandparent = parent.parent
+      if (
+        (ts.isCallExpression(grandparent) || ts.isNewExpression(grandparent)) &&
+        grandparent.expression === parent
+      ) {
+        return scip.scip.SyntaxKind.IdentifierFunction
+      }
+    }
+    return undefined
   }
 
   private pushOccurrence(occurrence: scip.scip.Occurrence): void {
