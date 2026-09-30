@@ -115,6 +115,7 @@ export class FileIndexer {
     this.pushSymbolInformation(
       new scip.scip.SymbolInformation({
         symbol: symbol.value,
+        display_name: moduleName,
         documentation: [`\`\`\`${language}\nmodule "${moduleName}"\n\`\`\``],
         kind: scip.scip.SymbolInformation.Kind.File,
       })
@@ -431,6 +432,7 @@ export class FileIndexer {
     this.pushSymbolInformation(
       new scip.scip.SymbolInformation({
         symbol: symbol.value,
+        display_name: symbolDisplayName(sym, declaration),
         documentation,
         relationships: this.relationships(declaration, symbol),
         kind: symbolKind(declaration, sym),
@@ -1239,6 +1241,13 @@ function bindingElementKind(
     return variableKind(owner)
   }
   return Kind.Variable
+}
+
+function symbolDisplayName(sym: ts.Symbol, declaration: ts.Node): string {
+  const named = declarationName(declaration)
+  const text = named?.getText()
+  if (text) return text.replace(/^['"`]|['"`]$/g, '')
+  return sym.getName()
 }
 
 function declarationName(node: ts.Node): ts.Node | undefined {
